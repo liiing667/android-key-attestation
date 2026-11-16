@@ -19,7 +19,6 @@ import static com.google.android.attestation.Constants.ATTESTATION_APPLICATION_I
 import static com.google.android.attestation.Constants.ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX;
 import static com.google.android.attestation.Constants.ATTESTATION_PACKAGE_INFO_PACKAGE_NAME_INDEX;
 import static com.google.android.attestation.Constants.ATTESTATION_PACKAGE_INFO_VERSION_INDEX;
-import static com.google.common.collect.Streams.stream;
 import static java.nio.charset.StandardCharsets.UTF_8;
 
 import com.google.auto.value.AutoValue;
@@ -90,28 +89,73 @@ public abstract class AttestationApplicationId {
   }
 
   static AttestationApplicationId createAttestationApplicationId(byte[] attestationApplicationId) {
-    AttestationApplicationId.Builder builder = AttestationApplicationId.builder();
-    ASN1Sequence attestationApplicationIdSequence =
-        ASN1Sequence.getInstance(attestationApplicationId);
-    ASN1Set attestationPackageInfos =
-        (ASN1Set)
-            attestationApplicationIdSequence.getObjectAt(
-                ATTESTATION_APPLICATION_ID_PACKAGE_INFOS_INDEX);
-    stream(attestationPackageInfos.iterator())
-        .map(ASN1Sequence.class::cast)
-        .map(AttestationPackageInfo::create)
-        .forEach(builder::addPackageInfo);
+    return createAttestationApplicationId(attestationApplicationId, "attestation application id");
+  }
 
-    ASN1Set digests =
-        (ASN1Set)
-            attestationApplicationIdSequence.getObjectAt(
-                ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX);
-    stream(digests.iterator())
-        .map(ASN1OctetString.class::cast)
-        .map(ASN1OctetString::getOctets)
-        .map(ByteString::copyFrom)
-        .forEach(builder::addSignatureDigest);
-    return builder.build();
+  static AttestationApplicationId createAttestationApplicationId(
+      byte[] attestationApplicationId, String location) {
+    AttestationApplicationId.Builder builder = AttestationApplicationId.builder();
+    final ASN1Sequence attestationApplicationIdSequence;
+    try {
+      attestationApplicationIdSequence = ASN1Sequence.getInstance(attestationApplicationId);
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException(
+          String.format("Malformed %s: %s", location, e.getMessage()), e);
+    }
+    if (attestationApplicationIdSequence == null) {
+      // Preserve the historical NullPointerException contract for callers.
+      throw new NullPointerException("attestationApplicationId");
+    }
+    try {
+      ASN1Encodable packageInfosElement =
+          attestationApplicationIdSequence.getObjectAt(
+              ATTESTATION_APPLICATION_ID_PACKAGE_INFOS_INDEX);
+      if (!(packageInfosElement instanceof ASN1Set)) {
+        throw new IllegalArgumentException(
+            String.format(
+                "Expected ASN.1 SET of package infos at %s[%d]; found %s instead.",
+                location,
+                ATTESTATION_APPLICATION_ID_PACKAGE_INFOS_INDEX,
+                packageInfosElement.getClass().getName()));
+      }
+      ASN1Set attestationPackageInfos = (ASN1Set) packageInfosElement;
+      for (int i = 0; i < attestationPackageInfos.size(); i++) {
+        builder.addPackageInfo(
+            AttestationPackageInfo.create(
+                attestationPackageInfos.getObjectAt(i),
+                String.format("%s.packageInfos[%d]", location, i)));
+      }
+
+      ASN1Encodable digestsElement =
+          attestationApplicationIdSequence.getObjectAt(
+              ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX);
+      if (!(digestsElement instanceof ASN1Set)) {
+        throw new IllegalArgumentException(
+            String.format(
+                "Expected ASN.1 SET of signature digests at %s[%d]; found %s instead.",
+                location,
+                ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX,
+                digestsElement.getClass().getName()));
+      }
+      ASN1Set digests = (ASN1Set) digestsElement;
+      for (int i = 0; i < digests.size(); i++) {
+        ASN1Encodable digestElement = digests.getObjectAt(i);
+        if (!(digestElement instanceof ASN1OctetString)) {
+          throw new IllegalArgumentException(
+              String.format(
+                  "Expected ASN.1 OCTET STRING signature digest at %s.signatureDigests[%d];"
+                      + " found %s instead.",
+                  location, i, digestElement.getClass().getName()));
+        }
+        builder.addSignatureDigest(((ASN1OctetString) digestElement).getOctets());
+      }
+      return builder.build();
+    } catch (IllegalArgumentException e) {
+      throw e;
+    } catch (RuntimeException e) {
+      throw new IllegalArgumentException(
+          String.format("Malformed %s: %s", location, e.getMessage()), e);
+    }
   }
 
   byte[] getEncoded() {
@@ -157,17 +201,30 @@ public abstract class AttestationApplicationId {
       public abstract AttestationPackageInfo build();
     }
 
-    private static AttestationPackageInfo create(ASN1Sequence packageInfo) {
+    private static AttestationPackageInfo create(ASN1Encodable packageInfo, String location) {
+      if (!(packageInfo instanceof ASN1Sequence)) {
+        throw new IllegalArgumentException(
+            String.format(
+                "Expected ASN.1 SEQUENCE package info at %s; found %s instead.",
+                location, packageInfo.getClass().getName()));
+      }
+      ASN1Sequence packageInfoSequence = (ASN1Sequence) packageInfo;
+      ASN1Encodable packageNameElement =
+          packageInfoSequence.getObjectAt(ATTESTATION_PACKAGE_INFO_PACKAGE_NAME_INDEX);
+      if (!(packageNameElement instanceof ASN1OctetString)) {
+        throw new IllegalArgumentException(
+            String.format(
+                "Expected ASN.1 OCTET STRING package name at %s[%d]; found %s instead.",
+                location,
+                ATTESTATION_PACKAGE_INFO_PACKAGE_NAME_INDEX,
+                packageNameElement.getClass().getName()));
+      }
       String packageName =
-          new String(
-              ((ASN1OctetString)
-                      packageInfo.getObjectAt(ATTESTATION_PACKAGE_INFO_PACKAGE_NAME_INDEX))
-                  .getOctets(),
-              UTF_8);
+          new String(((ASN1OctetString) packageNameElement).getOctets(), UTF_8);
       long version =
-          ((ASN1Integer) packageInfo.getObjectAt(ATTESTATION_PACKAGE_INFO_VERSION_INDEX))
-              .getValue()
-              .longValue();
+          ASN1Parsing.getLongFromAsn1(
+              packageInfoSequence.getObjectAt(ATTESTATION_PACKAGE_INFO_VERSION_INDEX),
+              String.format("%s[%d]", location, ATTESTATION_PACKAGE_INFO_VERSION_INDEX));
       return AttestationPackageInfo.builder()
           .setPackageName(packageName)
           .setVersion(version)

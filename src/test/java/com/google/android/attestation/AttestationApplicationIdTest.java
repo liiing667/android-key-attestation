@@ -121,11 +121,13 @@ public class AttestationApplicationIdTest {
     assertThrows(
         NullPointerException.class,
         () -> AttestationApplicationId.createAttestationApplicationId(null));
-    assertThrows(
-        IllegalArgumentException.class,
-        () ->
-            AttestationApplicationId.createAttestationApplicationId(
-                "Invalid DEROctet String".getBytes(UTF_8)));
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AttestationApplicationId.createAttestationApplicationId(
+                    "Invalid DEROctet String".getBytes(UTF_8)));
+    assertThat(error).hasMessageThat().contains("attestation application id");
   }
 
   @Test

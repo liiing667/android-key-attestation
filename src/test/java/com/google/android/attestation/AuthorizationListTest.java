@@ -26,8 +26,13 @@ import static com.google.android.attestation.AuthorizationList.UserAuthType.PASS
 import static com.google.android.attestation.AuthorizationList.UserAuthType.USER_AUTH_TYPE_ANY;
 import static com.google.android.attestation.AuthorizationList.UserAuthType.USER_AUTH_TYPE_NONE;
 import static com.google.android.attestation.AuthorizationList.userAuthTypeToEnum;
+import static com.google.android.attestation.Constants.KM_TAG_ATTESTATION_APPLICATION_ID;
+import static com.google.android.attestation.Constants.KM_TAG_DIGEST;
+import static com.google.android.attestation.Constants.KM_TAG_KEY_SIZE;
+import static com.google.android.attestation.Constants.KM_TAG_NO_AUTH_REQUIRED;
 import static com.google.android.attestation.Constants.UINT32_MAX;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.android.attestation.AuthorizationList.Algorithm;
@@ -39,6 +44,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.io.IOException;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -47,8 +53,14 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1EncodableVector;
+import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.ASN1TaggedObject;
+import org.bouncycastle.asn1.DERNull;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSet;
+import org.bouncycastle.asn1.DERTaggedObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -270,5 +282,162 @@ public class AuthorizationListTest {
             getEncodableAuthorizationList(EXTENSION_DATA_WITH_REPATED_TAGS), ATTESTATION_VERSION);
 
     assertThat(authorizationList.digest()).containsExactly(DigestMode.SHA_2_256, DigestMode.MD5);
+  }
+
+  @Test
+  public void unknownTags_arePreservedAndDoNotFailParsing() {
+    int unknownVendorTag = 1_000_000;
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          new DERTaggedObject(unknownVendorTag, new DEROctetString(new byte[] {1, 2, 3})),
+          new DERTaggedObject(KM_TAG_KEY_SIZE, new ASN1Integer(2048)),
+        };
+
+    AuthorizationList authorizationListRecord =
+        AuthorizationList.createAuthorizationList(authorizationList, ATTESTATION_VERSION);
+
+    assertThat(authorizationListRecord.unknownTags()).containsExactly(unknownVendorTag);
+    assertThat(authorizationListRecord.keySize()).hasValue(2048);
+  }
+
+  @Test
+  public void duplicateSingleValuedTag_failsWithElementLocation() {
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          new DERTaggedObject(KM_TAG_KEY_SIZE, new ASN1Integer(2048)),
+          new DERTaggedObject(KM_TAG_KEY_SIZE, new ASN1Integer(4096)),
+        };
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    authorizationList, ATTESTATION_VERSION));
+
+    assertThat(error)
+        .hasMessageThat()
+        .contains("authorizationList[1] (tag " + KM_TAG_KEY_SIZE + ")");
+    assertThat(error).hasMessageThat().contains("authorizationList[0] (tag " + KM_TAG_KEY_SIZE + ")");
+  }
+
+  @Test
+  public void duplicateBooleanSecurityFlag_fails() {
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          new DERTaggedObject(KM_TAG_NO_AUTH_REQUIRED, DERNull.INSTANCE),
+          new DERTaggedObject(KM_TAG_NO_AUTH_REQUIRED, DERNull.INSTANCE),
+        };
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    authorizationList, ATTESTATION_VERSION));
+
+    assertThat(error).hasMessageThat().contains("Duplicate authorization list entry");
+    assertThat(error).hasMessageThat().contains("tag " + KM_TAG_NO_AUTH_REQUIRED);
+  }
+
+  @Test
+  public void wrongValueType_failsWithElementLocation() {
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          // Key size must wrap an INTEGER, not an OCTET STRING.
+          new DERTaggedObject(KM_TAG_KEY_SIZE, new DEROctetString(new byte[] {1})),
+        };
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    authorizationList, ATTESTATION_VERSION));
+
+    assertThat(error)
+        .hasMessageThat()
+        .contains("authorizationList[0] (tag " + KM_TAG_KEY_SIZE + ")");
+  }
+
+  @Test
+  public void integerTooLargeForInt_failsWithElementLocation() {
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          new DERTaggedObject(
+              KM_TAG_KEY_SIZE, new ASN1Integer(BigInteger.ONE.shiftLeft(40))),
+        };
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    authorizationList, ATTESTATION_VERSION));
+
+    assertThat(error)
+        .hasMessageThat()
+        .contains("authorizationList[0] (tag " + KM_TAG_KEY_SIZE + ")");
+    assertThat(error).hasMessageThat().contains("does not fit into a signed 32-bit int");
+  }
+
+  @Test
+  public void malformedAttestationApplicationId_failsWithOuterAndInnerLocation() {
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          // Not a valid AttestationApplicationId SEQUENCE structure.
+          new DERTaggedObject(
+              KM_TAG_ATTESTATION_APPLICATION_ID, new DEROctetString(new byte[] {1, 2, 3})),
+        };
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    authorizationList, ATTESTATION_VERSION));
+
+    assertThat(error)
+        .hasMessageThat()
+        .contains("authorizationList[0] (tag " + KM_TAG_ATTESTATION_APPLICATION_ID + ")");
+  }
+
+  @Test
+  public void errorMessages_doNotContainCertificatePrivateMaterial() {
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          new DERTaggedObject(KM_TAG_KEY_SIZE, new ASN1Integer(2048)),
+          new DERTaggedObject(KM_TAG_KEY_SIZE, new ASN1Integer(4096)),
+        };
+
+    IllegalArgumentException error =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    authorizationList, ATTESTATION_VERSION));
+
+    assertThat(error).hasMessageThat().doesNotContain("PRIVATE KEY");
+    assertThat(error).hasMessageThat().doesNotContain("BEGIN");
+  }
+
+  @Test
+  public void repeatableSetTags_areMergedWhileSingleTagsConflictsFail() {
+    ASN1EncodableVector digestSetOne = new ASN1EncodableVector();
+    digestSetOne.add(new ASN1Integer(6)); // SHA_2_512
+    ASN1EncodableVector digestSetTwo = new ASN1EncodableVector();
+    digestSetTwo.add(new ASN1Integer(1)); // MD5
+    ASN1Encodable[] authorizationList =
+        new ASN1Encodable[] {
+          new DERTaggedObject(KM_TAG_DIGEST, new DERSet(digestSetOne)),
+          new DERTaggedObject(KM_TAG_DIGEST, new DERSet(digestSetTwo)),
+        };
+
+    AuthorizationList parsed =
+        AuthorizationList.createAuthorizationList(authorizationList, ATTESTATION_VERSION);
+
+    assertThat(parsed.digest())
+        .containsExactly(DigestMode.SHA_2_512, DigestMode.MD5);
+    assertThat(parsed.unknownTags()).isEmpty();
   }
 }

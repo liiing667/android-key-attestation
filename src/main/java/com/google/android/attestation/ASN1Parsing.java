@@ -15,6 +15,7 @@
 
 package com.google.android.attestation;
 
+import java.math.BigInteger;
 import org.bouncycastle.asn1.ASN1Boolean;
 import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.ASN1Enumerated;
@@ -42,6 +43,53 @@ class ASN1Parsing {
     } else {
       throw new IllegalArgumentException(
           "Integer value expected; found " + asn1Value.getClass().getName() + " instead.");
+    }
+  }
+
+  /**
+   * Reads an integer that must fit into a signed {@code int}, attaching {@code location} to any
+   * reported failure so callers can pinpoint the offending ASN.1 element.
+   */
+  static int getIntegerFromAsn1(ASN1Encodable asn1Value, String location) {
+    BigInteger value = getBigIntegerFromAsn1(asn1Value, location);
+    try {
+      return value.intValueExact();
+    } catch (ArithmeticException e) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Integer value at %s does not fit into a signed 32-bit int: %s",
+              location, value.toString()),
+          e);
+    }
+  }
+
+  /**
+   * Reads an integer that must fit into a signed {@code long}, attaching {@code location} to any
+   * reported failure so callers can pinpoint the offending ASN.1 element.
+   */
+  static long getLongFromAsn1(ASN1Encodable asn1Value, String location) {
+    BigInteger value = getBigIntegerFromAsn1(asn1Value, location);
+    try {
+      return value.longValueExact();
+    } catch (ArithmeticException e) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Integer value at %s does not fit into a signed 64-bit long: %s",
+              location, value.toString()),
+          e);
+    }
+  }
+
+  private static BigInteger getBigIntegerFromAsn1(ASN1Encodable asn1Value, String location) {
+    if (asn1Value instanceof ASN1Integer) {
+      return ((ASN1Integer) asn1Value).getValue();
+    } else if (asn1Value instanceof ASN1Enumerated) {
+      return ((ASN1Enumerated) asn1Value).getValue();
+    } else {
+      throw new IllegalArgumentException(
+          String.format(
+              "Integer value expected at %s; found %s instead.",
+              location, asn1Value.getClass().getName()));
     }
   }
 }
