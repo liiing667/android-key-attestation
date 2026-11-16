@@ -11,6 +11,20 @@ java_test(
 )
 
 java_test(
+    name = "AttestationVerificationResultTest",
+    srcs = ["AttestationVerificationResultTest.java"],
+    deps = [
+        "//src/main/java/com/google/android/attestation",
+        "@maven//:com_google_guava_guava",
+        "@maven//:com_google_protobuf_protobuf_javalite",
+        "@maven//:com_google_truth_truth",
+        "@maven//:junit_junit",
+        "@maven//:org_bouncycastle_bcpkix_jdk18on",
+        "@maven//:org_bouncycastle_bcprov_jdk18on",
+    ],
+)
+
+java_test(
     name = "AuthorizationListTest",
     srcs = ["AuthorizationListTest.java"],
     deps = [

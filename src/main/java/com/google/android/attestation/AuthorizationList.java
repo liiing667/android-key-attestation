@@ -70,6 +70,7 @@ import com.google.common.collect.Streams;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.Immutable;
 import com.google.protobuf.ByteString;
+import java.io.IOException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -86,6 +87,7 @@ import org.bouncycastle.asn1.ASN1EncodableVector;
 import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Object;
 import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.ASN1Set;
 import org.bouncycastle.asn1.ASN1TaggedObject;
@@ -336,6 +338,49 @@ public abstract class AuthorizationList {
           7,
           OperationPurpose.ATTEST_KEY);
 
+  /**
+   * Tags that this version of the library knows how to model. Entries carrying any other tag are
+   * preserved verbatim in {@link #unknownFields()} and never take part in a security decision.
+   */
+  private static final ImmutableSet<Integer> KNOWN_TAGS =
+      ImmutableSet.of(
+          KM_TAG_PURPOSE,
+          KM_TAG_ALGORITHM,
+          KM_TAG_KEY_SIZE,
+          KM_TAG_DIGEST,
+          KM_TAG_PADDING,
+          KM_TAG_EC_CURVE,
+          KM_TAG_RSA_PUBLIC_EXPONENT,
+          KM_TAG_ROLLBACK_RESISTANCE,
+          KM_TAG_ACTIVE_DATE_TIME,
+          KM_TAG_ORIGINATION_EXPIRE_DATE_TIME,
+          KM_TAG_USAGE_EXPIRE_DATE_TIME,
+          KM_TAG_NO_AUTH_REQUIRED,
+          KM_TAG_USER_AUTH_TYPE,
+          KM_TAG_AUTH_TIMEOUT,
+          KM_TAG_ALLOW_WHILE_ON_BODY,
+          KM_TAG_TRUSTED_USER_PRESENCE_REQUIRED,
+          KM_TAG_TRUSTED_CONFIRMATION_REQUIRED,
+          KM_TAG_UNLOCKED_DEVICE_REQUIRED,
+          KM_TAG_CREATION_DATE_TIME,
+          KM_TAG_ORIGIN,
+          KM_TAG_ROOT_OF_TRUST,
+          KM_TAG_OS_VERSION,
+          KM_TAG_OS_PATCH_LEVEL,
+          KM_TAG_ATTESTATION_APPLICATION_ID,
+          KM_TAG_ATTESTATION_ID_BRAND,
+          KM_TAG_ATTESTATION_ID_DEVICE,
+          KM_TAG_ATTESTATION_ID_PRODUCT,
+          KM_TAG_ATTESTATION_ID_SERIAL,
+          KM_TAG_ATTESTATION_ID_IMEI,
+          KM_TAG_ATTESTATION_ID_SECOND_IMEI,
+          KM_TAG_ATTESTATION_ID_MEID,
+          KM_TAG_ATTESTATION_ID_MANUFACTURER,
+          KM_TAG_ATTESTATION_ID_MODEL,
+          KM_TAG_VENDOR_PATCH_LEVEL,
+          KM_TAG_BOOT_PATCH_LEVEL,
+          KM_TAG_DEVICE_UNIQUE_ATTESTATION);
+
   public abstract ImmutableSet<OperationPurpose> purpose();
 
   public abstract Optional<Algorithm> algorithm();
@@ -410,6 +455,16 @@ public abstract class AuthorizationList {
 
 
   public abstract ImmutableList<Integer> unorderedTags();
+
+  /**
+   * Authorization entries whose tags are not recognized by this version of the library.
+   *
+   * <p>The map is keyed by the ASN.1 context-specific tag number. The value retains the raw DER
+   * encoding of the tagged entry's content, so that unknown entries survive parsing and re-encoding
+   * without being interpreted. Unknown entries never influence any of the modeled fields and
+   * therefore cannot change a security decision.
+   */
+  public abstract ImmutableMap<Integer, ByteString> unknownFields();
 
   public abstract Builder toBuilder();
 
@@ -580,6 +635,18 @@ public abstract class AuthorizationList {
       return this;
     }
 
+    abstract ImmutableMap.Builder<Integer, ByteString> unknownFieldsBuilder();
+
+    /**
+     * Retains an unrecognized authorization entry verbatim. {@code encodedContent} must be the DER
+     * encoding of the entry's content (the object wrapped by the context-specific tag).
+     */
+    @CanIgnoreReturnValue
+    public final Builder addUnknownField(int tag, ByteString encodedContent) {
+      unknownFieldsBuilder().put(tag, encodedContent);
+      return this;
+    }
+
     public abstract AuthorizationList build();
   }
 
@@ -708,6 +775,7 @@ public abstract class AuthorizationList {
     builder.setIndividualAttestation(
         parsedAuthorizationMap.findBooleanAuthorizationListEntry(KM_TAG_DEVICE_UNIQUE_ATTESTATION));
     parsedAuthorizationMap.getUnorderedTags().forEach(builder::addUnorderedTag);
+    parsedAuthorizationMap.getUnknownEntries().forEach(builder::addUnknownField);
 
     return builder.build();
   }
@@ -867,7 +935,20 @@ public abstract class AuthorizationList {
         this.bootPatchLevel().map(AuthorizationList::toString).map(Integer::valueOf),
         vector);
     addBoolean(KM_TAG_DEVICE_UNIQUE_ATTESTATION, this.individualAttestation(), vector);
+    this.unknownFields()
+        .forEach(
+            (tag, encodedContent) ->
+                vector.add(new DERTaggedObject(tag, decodeUnknownField(encodedContent))));
     return new DERSequence(vector);
+  }
+
+  private static ASN1Object decodeUnknownField(ByteString encodedContent) {
+    try {
+      return ASN1Primitive.fromByteArray(encodedContent.toByteArray());
+    } catch (IOException e) {
+      throw new IllegalArgumentException(
+          "Invalid DER encoding in unknown authorization list entry.", e);
+    }
   }
 
   private static void addOptionalIntegerSet(
@@ -940,6 +1021,7 @@ public abstract class AuthorizationList {
   private static class ParsedAuthorizationMap {
     private final ImmutableListMultimap<Integer, ASN1Object> authorizationMap;
     private final ImmutableList<Integer> unorderedTags;
+    private final ImmutableMap<Integer, ByteString> unknownEntries;
 
     private ParsedAuthorizationMap(ASN1Encodable[] authorizationList) {
       this.authorizationMap =
@@ -959,10 +1041,33 @@ public abstract class AuthorizationList {
         previousTag = currentTag;
       }
       this.unorderedTags = unorderedTags.build();
+
+      ImmutableMap.Builder<Integer, ByteString> unknownEntries = ImmutableMap.builder();
+      for (int tag : authorizationMap.keySet()) {
+        if (!KNOWN_TAGS.contains(tag)) {
+          ImmutableList<ASN1Object> entries = authorizationMap.get(tag);
+          if (entries.size() != 1) {
+            throw new IllegalStateException(
+                String.format("Multiple authorization list entries for tag %d", tag));
+          }
+          try {
+            unknownEntries.put(tag, ByteString.copyFrom(entries.get(0).getEncoded()));
+          } catch (IOException e) {
+            throw new IllegalArgumentException(
+                String.format("Unable to encode unknown authorization list entry for tag %d", tag),
+                e);
+          }
+        }
+      }
+      this.unknownEntries = unknownEntries.build();
     }
 
     private ImmutableList<Integer> getUnorderedTags() {
       return unorderedTags;
+    }
+
+    private ImmutableMap<Integer, ByteString> getUnknownEntries() {
+      return unknownEntries;
     }
 
     private Optional<ASN1Object> findAuthorizationListEntry(int tag) {

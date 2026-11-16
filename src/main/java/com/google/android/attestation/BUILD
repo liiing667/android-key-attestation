@@ -20,6 +20,7 @@ java_library(
     srcs = [
         "ASN1Parsing.java",
         "AttestationApplicationId.java",
+        "AttestationVerificationResult.java",
         "AuthorizationList.java",
         "CertificateRevocationStatus.java",
         "Constants.java",

@@ -16,12 +16,12 @@
 package com.android.example;
 
 import static com.google.android.attestation.Constants.GOOGLE_ROOT_CA_PUB_KEY;
-import static com.google.android.attestation.ParsedAttestationRecord.createParsedAttestationRecord;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 import com.google.android.attestation.AttestationApplicationId;
 import com.google.android.attestation.AttestationApplicationId.AttestationPackageInfo;
+import com.google.android.attestation.AttestationVerificationResult;
 import com.google.android.attestation.AuthorizationList;
 import com.google.android.attestation.CertificateRevocationStatus;
 import com.google.android.attestation.ParsedAttestationRecord;
@@ -33,16 +33,11 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.security.InvalidKeyException;
-import java.security.NoSuchAlgorithmException;
-import java.security.NoSuchProviderException;
-import java.security.SignatureException;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
 import java.util.Base64;
-import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Stream;
@@ -79,16 +74,19 @@ public class KeyAttestationExample {
   private KeyAttestationExample() {}
 
   public static void main(String[] args)
-      throws CertificateException, IOException, NoSuchProviderException, NoSuchAlgorithmException,
-          InvalidKeyException, SignatureException {
+      throws CertificateException, IOException {
     checkArgument(
         args.length == 1, "expected path to a directory containing certificates as an argument");
 
     ImmutableList<X509Certificate> certs = loadCertificates(args[0]);
 
-    verifyCertificateChain(certs);
-
-    ParsedAttestationRecord parsedAttestationRecord = createParsedAttestationRecord(certs);
+    // Verify the chain and parse the record in one step. The returned result is a single
+    // immutable snapshot: the chain, the security levels, and every authorization field are
+    // read-only, so nothing verified here can be altered by later code.
+    checkRevocationStatus(certs);
+    AttestationVerificationResult verificationResult =
+        AttestationVerificationResult.create(certs);
+    ParsedAttestationRecord parsedAttestationRecord = verificationResult.attestationRecord();
 
     System.out.println("Attestation version: " + parsedAttestationRecord.attestationVersion());
     System.out.println(
@@ -213,16 +211,9 @@ public class KeyAttestationExample {
     }
   }
 
-  private static void verifyCertificateChain(List<X509Certificate> certs)
-      throws CertificateException, NoSuchAlgorithmException, InvalidKeyException,
-      NoSuchProviderException, SignatureException, IOException {
-    X509Certificate parent = certs.get(certs.size() - 1);
-    for (int i = certs.size() - 1; i >= 0; i--) {
-      X509Certificate cert = certs.get(i);
-      // Verify that the certificate has not expired.
-      cert.checkValidity();
-      cert.verify(parent.getPublicKey());
-      parent = cert;
+  private static void checkRevocationStatus(ImmutableList<X509Certificate> certs)
+      throws CertificateException, IOException {
+    for (X509Certificate cert : certs) {
       try {
         CertificateRevocationStatus certStatus = CertificateRevocationStatus
             .fetchStatus(cert.getSerialNumber());
