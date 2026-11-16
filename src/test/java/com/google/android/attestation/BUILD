@@ -24,6 +24,17 @@ java_test(
 )
 
 java_test(
+    name = "CertificateRevocationStatusTest",
+    srcs = ["CertificateRevocationStatusTest.java"],
+    data = ["//src/test/resources:example_certificates"],
+    deps = [
+        "//src/main/java/com/google/android/attestation",
+        "@maven//:com_google_truth_truth",
+        "@maven//:junit_junit",
+    ],
+)
+
+java_test(
     name = "ParsedAttestationRecordTest",
     srcs = ["ParsedAttestationRecordTest.java"],
     deps = [

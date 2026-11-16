@@ -17,13 +17,18 @@ package com.google.android.attestation;
 
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.Assert.assertThrows;
 
 import com.google.android.attestation.CertificateRevocationStatus.Reason;
 import com.google.android.attestation.CertificateRevocationStatus.Status;
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.StringReader;
 import java.math.BigInteger;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import org.junit.Test;
@@ -79,19 +84,20 @@ public final class CertificateRevocationStatusTest {
   @Test
   public void loadAllTestEntries() throws Exception {
     HashSet<String> allTestSerialNumbers = new HashSet<>();
-    allTestSerialNumbers.add("6681152659205225093");
-    allTestSerialNumbers.add("8350192447815228107");
-    allTestSerialNumbers.add("9408173275444922801");
-    allTestSerialNumbers.add("11244410301401252959");
+    // Decimal serial numbers in the status file are canonicalized to hexadecimal.
+    allTestSerialNumbers.add(new BigInteger("6681152659205225093").toString(16));
+    allTestSerialNumbers.add(new BigInteger("8350192447815228107").toString(16));
+    allTestSerialNumbers.add(new BigInteger("9408173275444922801").toString(16));
+    allTestSerialNumbers.add(new BigInteger("11244410301401252959").toString(16));
     allTestSerialNumbers.add("cc66e9a93713b6e643b26c15879786f7");
 
     HashMap<String, CertificateRevocationStatus> statusMap =
             CertificateRevocationStatus.loadAllEntriesFromFile(TEST_STATUS_LIST_PATH);
 
     assertThat(statusMap.keySet()).isEqualTo(allTestSerialNumbers);
-    assertThat(statusMap.get("8350192447815228107").status)
+    assertThat(statusMap.get(new BigInteger("8350192447815228107").toString(16)).status)
             .isEqualTo(CertificateRevocationStatus.Status.REVOKED);
-    assertThat(statusMap.get("8350192447815228107").reason)
+    assertThat(statusMap.get(new BigInteger("8350192447815228107").toString(16)).reason)
             .isEqualTo(CertificateRevocationStatus.Reason.KEY_COMPROMISE);
     assertThat(statusMap.get("cc66e9a93713b6e643b26c15879786f7").status)
             .isEqualTo(CertificateRevocationStatus.Status.SUSPENDED);
@@ -99,5 +105,174 @@ public final class CertificateRevocationStatusTest {
             .isEqualTo(CertificateRevocationStatus.Reason.KEY_COMPROMISE);
     assertThat(statusMap.get("cc66e9a93713b6e643b26c15879786f7").comment)
             .isEqualTo("Entry for testing only");
+  }
+
+  @Test
+  public void serialNumbersAreCanonicalized() throws Exception {
+    // "255" (decimal), "ff" and "0FF" (hexadecimal) all identify the same certificate.
+    String statusList =
+        "{\"entries\": {"
+            + "\"255\": {\"status\": \"REVOKED\", \"reason\": \"KEY_COMPROMISE\"},"
+            + "\"0FF\": {\"status\": \"REVOKED\", \"reason\": \"KEY_COMPROMISE\"}"
+            + "}}";
+
+    HashMap<String, CertificateRevocationStatus> statusMap =
+        CertificateRevocationStatus.loadAllEntries(new StringReader(statusList));
+
+    assertThat(statusMap.keySet()).containsExactly("ff");
+    assertThat(statusMap.get("ff").status).isEqualTo(Status.REVOKED);
+    assertThat(statusMap.get("ff").reason).isEqualTo(Reason.KEY_COMPROMISE);
+
+    // Lookups are canonicalized the same way, regardless of representation or case.
+    assertThat(CertificateRevocationStatus.loadStatus("255", new StringReader(statusList)))
+        .isNotNull();
+    assertThat(CertificateRevocationStatus.loadStatus("FF", new StringReader(statusList)))
+        .isNotNull();
+    assertThat(CertificateRevocationStatus.loadStatus("00ff", new StringReader(statusList)))
+        .isNotNull();
+  }
+
+  @Test
+  public void duplicateIdenticalEntriesAreMerged() throws Exception {
+    String statusList =
+        "{\"entries\": {"
+            + "\"ab\": {\"status\": \"REVOKED\", \"reason\": \"KEY_COMPROMISE\"},"
+            + "\"AB\": {\"status\": \"REVOKED\", \"reason\": \"KEY_COMPROMISE\"}"
+            + "}}";
+
+    HashMap<String, CertificateRevocationStatus> statusMap =
+        CertificateRevocationStatus.loadAllEntries(new StringReader(statusList));
+
+    assertThat(statusMap.keySet()).containsExactly("ab");
+    assertThat(statusMap.get("ab").status).isEqualTo(Status.REVOKED);
+    assertThat(statusMap.get("ab").reason).isEqualTo(Reason.KEY_COMPROMISE);
+  }
+
+  @Test
+  public void conflictingRevokedAndValidEntriesAreUntrusted() throws Exception {
+    // The same certificate appears as both VALID and REVOKED: the conflict must be
+    // resolved conservatively, independently of the order of the records.
+    String validFirst =
+        "{\"entries\": {"
+            + "\"ab\": {\"status\": \"VALID\"},"
+            + "\"ab\": {\"status\": \"REVOKED\", \"reason\": \"KEY_COMPROMISE\"}"
+            + "}}";
+    String revokedFirst =
+        "{\"entries\": {"
+            + "\"ab\": {\"status\": \"REVOKED\", \"reason\": \"KEY_COMPROMISE\"},"
+            + "\"ab\": {\"status\": \"VALID\"}"
+            + "}}";
+
+    for (String statusList : new String[] {validFirst, revokedFirst}) {
+      HashMap<String, CertificateRevocationStatus> statusMap =
+          CertificateRevocationStatus.loadAllEntries(new StringReader(statusList));
+
+      assertThat(statusMap.keySet()).containsExactly("ab");
+      assertThat(statusMap.get("ab").status).isEqualTo(Status.REVOKED);
+      assertThat(statusMap.get("ab").reason).isEqualTo(Reason.UNSPECIFIED);
+
+      CertificateRevocationStatus lookedUp =
+          CertificateRevocationStatus.loadStatus("ab", new StringReader(statusList));
+      assertThat(lookedUp).isNotNull();
+      assertThat(lookedUp.status).isEqualTo(Status.REVOKED);
+      assertThat(lookedUp.reason).isEqualTo(Reason.UNSPECIFIED);
+    }
+  }
+
+  @Test
+  public void conflictingRevocationRecordsAreUntrusted() throws Exception {
+    String statusList =
+        "{\"entries\": {"
+            + "\"ab\": {\"status\": \"SUSPENDED\", \"reason\": \"KEY_COMPROMISE\"},"
+            + "\"ab\": {\"status\": \"REVOKED\", \"reason\": \"CA_COMPROMISE\"}"
+            + "}}";
+
+    HashMap<String, CertificateRevocationStatus> statusMap =
+        CertificateRevocationStatus.loadAllEntries(new StringReader(statusList));
+
+    assertThat(statusMap.keySet()).containsExactly("ab");
+    assertThat(statusMap.get("ab").status).isEqualTo(Status.REVOKED);
+    assertThat(statusMap.get("ab").reason).isEqualTo(Reason.UNSPECIFIED);
+  }
+
+  @Test
+  public void validOnlyEntryIsAbsent() throws Exception {
+    String statusList = "{\"entries\": {\"ab\": {\"status\": \"VALID\"}}}";
+
+    assertThat(CertificateRevocationStatus.loadAllEntries(new StringReader(statusList))).isEmpty();
+    assertThat(CertificateRevocationStatus.loadStatus("ab", new StringReader(statusList)))
+        .isNull();
+  }
+
+  @Test
+  public void invalidSerialNumberKeysAreRejected() {
+    // Keys that are not certificate serial numbers (e.g. URIs) must not enter the trust chain.
+    for (String key :
+        new String[] {
+          "https://evil.example.com/cert", "not-a-serial!", "ab cd", "0x12", ""
+        }) {
+      String statusList =
+          "{\"entries\": {\"" + key + "\": {\"status\": \"REVOKED\"}}}";
+      assertThrows(
+          IOException.class,
+          () -> CertificateRevocationStatus.loadAllEntries(new StringReader(statusList)));
+    }
+  }
+
+  @Test
+  public void overlongSerialNumberKeyIsRejected() {
+    char[] digits = new char[CertificateRevocationStatus.MAX_SERIAL_NUMBER_LENGTH + 1];
+    Arrays.fill(digits, '1');
+    String statusList =
+        "{\"entries\": {\"" + new String(digits) + "\": {\"status\": \"REVOKED\"}}}";
+
+    assertThrows(
+        IOException.class,
+        () -> CertificateRevocationStatus.loadAllEntries(new StringReader(statusList)));
+  }
+
+  @Test
+  public void unknownStatusIsRejected() {
+    String statusList = "{\"entries\": {\"ab\": {\"status\": \"UNKNOWN\"}}}";
+
+    assertThrows(
+        IOException.class,
+        () -> CertificateRevocationStatus.loadAllEntries(new StringReader(statusList)));
+  }
+
+  @Test
+  public void missingEntriesObjectIsRejected() {
+    assertThrows(
+        IOException.class,
+        () -> CertificateRevocationStatus.loadAllEntries(new StringReader("{\"foo\": 1}")));
+  }
+
+  @Test
+  public void oversizedStatusListIsRejected() {
+    // A document that never terminates must be rejected once it exceeds the size limit,
+    // without buffering it in memory.
+    final char[] prefix = "{\"entries\":{".toCharArray();
+    Reader infiniteReader =
+        new Reader() {
+          private int pos = 0;
+
+          @Override
+          public int read(char[] cbuf, int off, int len) {
+            int written = 0;
+            while (written < len && pos < prefix.length) {
+              cbuf[off + written++] = prefix[pos++];
+            }
+            if (written < len) {
+              Arrays.fill(cbuf, off + written, off + len, ' ');
+            }
+            return len;
+          }
+
+          @Override
+          public void close() {}
+        };
+
+    assertThrows(
+        IOException.class, () -> CertificateRevocationStatus.loadAllEntries(infiniteReader));
   }
 }
