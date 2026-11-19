@@ -18,6 +18,7 @@ package com.google.android.attestation;
 import static com.google.android.attestation.Constants.ATTESTATION_CHALLENGE_INDEX;
 import static com.google.android.attestation.Constants.ATTESTATION_SECURITY_LEVEL_INDEX;
 import static com.google.android.attestation.Constants.ATTESTATION_VERSION_INDEX;
+import static com.google.android.attestation.Constants.KEY_DESCRIPTION_SIZE;
 import static com.google.android.attestation.Constants.KEYMASTER_SECURITY_LEVEL_INDEX;
 import static com.google.android.attestation.Constants.KEYMASTER_VERSION_INDEX;
 import static com.google.android.attestation.Constants.KEY_DESCRIPTION_OID;
@@ -29,6 +30,7 @@ import static com.google.android.attestation.Constants.TEE_ENFORCED_INDEX;
 import static com.google.android.attestation.Constants.UNIQUE_ID_INDEX;
 
 import com.google.auto.value.AutoValue;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.Immutable;
 import com.google.protobuf.ByteString;
@@ -41,6 +43,7 @@ import org.bouncycastle.asn1.ASN1Enumerated;
 import org.bouncycastle.asn1.ASN1InputStream;
 import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.ASN1Primitive;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.DERSequence;
@@ -136,9 +139,20 @@ public abstract class ParsedAttestationRecord {
   }
 
   public static ParsedAttestationRecord create(ASN1Sequence extensionData, PublicKey attestedKey) {
+    if (extensionData == null || extensionData.size() < KEY_DESCRIPTION_SIZE) {
+      throw new IllegalArgumentException(
+          "Attestation extension must contain at least "
+              + KEY_DESCRIPTION_SIZE
+              + " fields; found "
+              + (extensionData == null ? 0 : extensionData.size())
+              + " instead.");
+    }
     Builder builder = builder();
     int attestationVersion =
         ASN1Parsing.getIntegerFromAsn1(extensionData.getObjectAt(ATTESTATION_VERSION_INDEX));
+    if (attestationVersion < 1) {
+      throw new IllegalArgumentException("Invalid attestation version: " + attestationVersion);
+    }
     builder.setAttestationVersion(attestationVersion);
     builder.setAttestationSecurityLevel(
         securityLevelToEnum(
@@ -151,17 +165,18 @@ public abstract class ParsedAttestationRecord {
             ASN1Parsing.getIntegerFromAsn1(
                 extensionData.getObjectAt(KEYMASTER_SECURITY_LEVEL_INDEX))));
     builder.setAttestationChallenge(
-        ASN1OctetString.getInstance(extensionData.getObjectAt(ATTESTATION_CHALLENGE_INDEX))
+        ASN1Parsing.getOctetStringFromAsn1(extensionData.getObjectAt(ATTESTATION_CHALLENGE_INDEX))
             .getOctets());
     builder.setUniqueId(
-        ASN1OctetString.getInstance(extensionData.getObjectAt(UNIQUE_ID_INDEX)).getOctets());
+        ASN1Parsing.getOctetStringFromAsn1(extensionData.getObjectAt(UNIQUE_ID_INDEX)).getOctets());
     builder.setSoftwareEnforced(
         AuthorizationList.createAuthorizationList(
-            ASN1Sequence.getInstance(extensionData.getObjectAt(SW_ENFORCED_INDEX)).toArray(),
+            ASN1Parsing.getSequenceFromAsn1(extensionData.getObjectAt(SW_ENFORCED_INDEX)).toArray(),
             attestationVersion));
     builder.setTeeEnforced(
         AuthorizationList.createAuthorizationList(
-            ASN1Sequence.getInstance(extensionData.getObjectAt(TEE_ENFORCED_INDEX)).toArray(),
+            ASN1Parsing.getSequenceFromAsn1(extensionData.getObjectAt(TEE_ENFORCED_INDEX))
+                .toArray(),
             attestationVersion));
     builder.setAttestedKey(attestedKey);
     return builder.build();
@@ -192,17 +207,32 @@ public abstract class ParsedAttestationRecord {
     throw new IllegalArgumentException("Invalid security level.");
   }
 
-  private static ASN1Sequence extractAttestationSequence(byte[] attestationExtensionBytes)
+  @VisibleForTesting
+  static ASN1Sequence extractAttestationSequence(byte[] attestationExtensionBytes)
       throws IOException {
     ASN1Sequence decodedSequence;
     try (ASN1InputStream asn1InputStream = new ASN1InputStream(attestationExtensionBytes)) {
       // The extension contains one object, a sequence, in the
       // Distinguished Encoding Rules (DER)-encoded form. Get the DER
       // bytes.
-      byte[] derSequenceBytes = ((ASN1OctetString) asn1InputStream.readObject()).getOctets();
+      ASN1Primitive extensionObject = asn1InputStream.readObject();
+      if (!(extensionObject instanceof ASN1OctetString)) {
+        throw new IllegalArgumentException(
+            "Attestation extension must contain an octet string; found "
+                + (extensionObject == null ? "null" : extensionObject.getClass().getName())
+                + " instead.");
+      }
+      byte[] derSequenceBytes = ((ASN1OctetString) extensionObject).getOctets();
       // Decode the bytes as an ASN1 sequence object.
       try (ASN1InputStream seqInputStream = new ASN1InputStream(derSequenceBytes)) {
-        decodedSequence = (ASN1Sequence) seqInputStream.readObject();
+        ASN1Primitive sequenceObject = seqInputStream.readObject();
+        if (!(sequenceObject instanceof ASN1Sequence)) {
+          throw new IllegalArgumentException(
+              "Attestation extension must contain a sequence; found "
+                  + (sequenceObject == null ? "null" : sequenceObject.getClass().getName())
+                  + " instead.");
+        }
+        decodedSequence = (ASN1Sequence) sequenceObject;
       }
     }
     return decodedSequence;

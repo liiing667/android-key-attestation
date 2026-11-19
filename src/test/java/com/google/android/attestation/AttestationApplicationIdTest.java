@@ -21,6 +21,11 @@ import static org.junit.Assert.assertThrows;
 
 import com.google.android.attestation.AttestationApplicationId.AttestationPackageInfo;
 import java.util.Base64;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Integer;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
+import org.bouncycastle.asn1.DERSet;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -126,6 +131,60 @@ public class AttestationApplicationIdTest {
         () ->
             AttestationApplicationId.createAttestationApplicationId(
                 "Invalid DEROctet String".getBytes(UTF_8)));
+  }
+
+  @Test
+  public void createAttestationApplicationId_missingFields_throwsException() throws Exception {
+    byte[] singleFieldSequence = new DERSequence(new DERSet()).getEncoded();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AttestationApplicationId.createAttestationApplicationId(singleFieldSequence));
+  }
+
+  @Test
+  public void createAttestationApplicationId_wrongFieldType_throwsException() throws Exception {
+    // packageInfos must be a set, not an octet string.
+    byte[] badPackageInfos =
+        new DERSequence(new ASN1Encodable[] {new DEROctetString(new byte[0]), new DERSet()})
+            .getEncoded();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AttestationApplicationId.createAttestationApplicationId(badPackageInfos));
+
+    // signatureDigests must be a set, not an integer.
+    byte[] badDigests =
+        new DERSequence(new ASN1Encodable[] {new DERSet(), new ASN1Integer(1)}).getEncoded();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AttestationApplicationId.createAttestationApplicationId(badDigests));
+
+    // Each package info must be a sequence, not an octet string.
+    byte[] badPackageInfoEntry =
+        new DERSequence(
+                new ASN1Encodable[] {
+                  new DERSet(new DEROctetString(new byte[0])), new DERSet()
+                })
+            .getEncoded();
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AttestationApplicationId.createAttestationApplicationId(badPackageInfoEntry));
+  }
+
+  @Test
+  public void createAttestationApplicationId_truncatedPackageInfo_throwsException()
+      throws Exception {
+    byte[] truncatedPackageInfo =
+        new DERSequence(
+                new ASN1Encodable[] {
+                  new DERSet(new DERSequence(new DEROctetString("name".getBytes(UTF_8)))),
+                  new DERSet()
+                })
+            .getEncoded();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AttestationApplicationId.createAttestationApplicationId(truncatedPackageInfo));
   }
 
   @Test

@@ -7,6 +7,7 @@ java_test(
         "@maven//:com_google_protobuf_protobuf_javalite",
         "@maven//:com_google_truth_truth",
         "@maven//:junit_junit",
+        "@maven//:org_bouncycastle_bcprov_jdk18on",
     ],
 )
 

@@ -22,7 +22,13 @@ import com.google.android.attestation.RootOfTrust.VerifiedBootState;
 import com.google.protobuf.ByteString;
 import java.io.IOException;
 import java.util.Base64;
+import org.bouncycastle.asn1.ASN1Boolean;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Enumerated;
+import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.JUnit4;
@@ -67,6 +73,59 @@ public class RootOfTrustTest {
   public void testCreateEmptyRootOfTrust() {
     assertThrows(
         NullPointerException.class, () -> RootOfTrust.createRootOfTrust(null, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createRootOfTrust_truncatedSequence_throws() {
+    ASN1Sequence truncated =
+        new DERSequence(
+            new ASN1Encodable[] {new DEROctetString(new byte[0]), ASN1Boolean.FALSE});
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> RootOfTrust.createRootOfTrust(truncated, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createRootOfTrust_missingBootHashForVersion3_throws() {
+    ASN1Sequence missingHash =
+        new DERSequence(
+            new ASN1Encodable[] {
+              new DEROctetString(new byte[0]), ASN1Boolean.FALSE, new ASN1Enumerated(0)
+            });
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> RootOfTrust.createRootOfTrust(missingHash, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createRootOfTrust_withoutBootHashForVersion2_succeeds() {
+    ASN1Sequence noHash =
+        new DERSequence(
+            new ASN1Encodable[] {
+              new DEROctetString(new byte[] {1, 2, 3}), ASN1Boolean.TRUE, new ASN1Enumerated(0)
+            });
+
+    RootOfTrust rootOfTrust = RootOfTrust.createRootOfTrust(noHash, /* attestationVersion= */ 2);
+
+    assertThat(rootOfTrust.verifiedBootKey()).isEqualTo(ByteString.copyFrom(new byte[] {1, 2, 3}));
+    assertThat(rootOfTrust.deviceLocked()).isTrue();
+    assertThat(rootOfTrust.verifiedBootState()).isEqualTo(VerifiedBootState.VERIFIED);
+  }
+
+  @Test
+  public void createRootOfTrust_wrongFieldType_throws() {
+    ASN1Sequence wrongBootKeyType =
+        new DERSequence(
+            new ASN1Encodable[] {
+              new ASN1Integer(1), ASN1Boolean.FALSE, new ASN1Enumerated(0),
+              new DEROctetString(new byte[0])
+            });
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> RootOfTrust.createRootOfTrust(wrongBootKeyType, ATTESTATION_VERSION));
   }
 
   @Test

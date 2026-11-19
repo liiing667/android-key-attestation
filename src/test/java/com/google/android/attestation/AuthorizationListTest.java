@@ -28,6 +28,7 @@ import static com.google.android.attestation.AuthorizationList.UserAuthType.USER
 import static com.google.android.attestation.AuthorizationList.userAuthTypeToEnum;
 import static com.google.android.attestation.Constants.UINT32_MAX;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.android.attestation.AuthorizationList.Algorithm;
@@ -39,6 +40,7 @@ import com.google.common.collect.ImmutableSet;
 import com.google.testing.junit.testparameterinjector.TestParameter;
 import com.google.testing.junit.testparameterinjector.TestParameterInjector;
 import java.io.IOException;
+import java.math.BigInteger;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -47,8 +49,12 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.ASN1TaggedObject;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
+import org.bouncycastle.asn1.DERTaggedObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -270,5 +276,115 @@ public class AuthorizationListTest {
             getEncodableAuthorizationList(EXTENSION_DATA_WITH_REPATED_TAGS), ATTESTATION_VERSION);
 
     assertThat(authorizationList.digest()).containsExactly(DigestMode.SHA_2_256, DigestMode.MD5);
+  }
+
+  @Test
+  public void createAuthorizationList_nonTaggedEntry_throws() {
+    ASN1Encodable[] authorizationList = {new ASN1Integer(1)};
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(authorizationList, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createAuthorizationList_implicitlyTaggedEntry_throws() {
+    ASN1Encodable[] authorizationList = {
+      new DERTaggedObject(false, Constants.KM_TAG_KEY_SIZE, new ASN1Integer(256))
+    };
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(authorizationList, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createAuthorizationList_wrongEntryType_throws() {
+    // keySize must be an integer, not an octet string.
+    ASN1Encodable[] badKeySize = {
+      new DERTaggedObject(Constants.KM_TAG_KEY_SIZE, new DEROctetString(new byte[] {1}))
+    };
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(badKeySize, ATTESTATION_VERSION));
+
+    // attestationIdBrand must be an octet string, not an integer.
+    ASN1Encodable[] badBrand = {
+      new DERTaggedObject(Constants.KM_TAG_ATTESTATION_ID_BRAND, new ASN1Integer(1))
+    };
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(badBrand, ATTESTATION_VERSION));
+
+    // purpose must be a set of integers, not a bare integer.
+    ASN1Encodable[] badPurpose = {
+      new DERTaggedObject(Constants.KM_TAG_PURPOSE, new ASN1Integer(1))
+    };
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(badPurpose, ATTESTATION_VERSION));
+
+    // rootOfTrust must be a sequence, not an octet string.
+    ASN1Encodable[] badRootOfTrust = {
+      new DERTaggedObject(Constants.KM_TAG_ROOT_OF_TRUST, new DEROctetString(new byte[] {1}))
+    };
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(badRootOfTrust, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createAuthorizationList_unknownEnumValue_throws() {
+    ASN1Encodable[] unknownAlgorithm = {
+      new DERTaggedObject(Constants.KM_TAG_ALGORITHM, new ASN1Integer(99))
+    };
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(unknownAlgorithm, ATTESTATION_VERSION));
+
+    ASN1Encodable[] unknownOrigin = {
+      new DERTaggedObject(Constants.KM_TAG_ORIGIN, new ASN1Integer(99))
+    };
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(unknownOrigin, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createAuthorizationList_integerOutOfRange_throws() {
+    ASN1Encodable[] hugeKeySize = {
+      new DERTaggedObject(
+          Constants.KM_TAG_KEY_SIZE, new ASN1Integer(new BigInteger("99999999999999999999")))
+    };
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(hugeKeySize, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createAuthorizationList_duplicateSingleEntryTag_throws() {
+    ASN1Encodable[] duplicateKeySize = {
+      new DERTaggedObject(Constants.KM_TAG_KEY_SIZE, new ASN1Integer(256)),
+      new DERTaggedObject(Constants.KM_TAG_KEY_SIZE, new ASN1Integer(512))
+    };
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> AuthorizationList.createAuthorizationList(duplicateKeySize, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void createAuthorizationList_rootOfTrustEntryWithTruncatedSequence_throws() {
+    ASN1Encodable[] truncatedRootOfTrust = {
+      new DERTaggedObject(
+          Constants.KM_TAG_ROOT_OF_TRUST,
+          new DERSequence(new ASN1Encodable[] {new DEROctetString(new byte[0])}))
+    };
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () ->
+            AuthorizationList.createAuthorizationList(truncatedRootOfTrust, ATTESTATION_VERSION));
   }
 }

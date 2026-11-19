@@ -17,6 +17,7 @@ package com.google.android.attestation;
 
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.Assert.assertThrows;
 
 import com.google.android.attestation.AuthorizationList.UserAuthType;
 import com.google.android.attestation.ParsedAttestationRecord.SecurityLevel;
@@ -31,7 +32,12 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
+import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Enumerated;
+import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -167,5 +173,127 @@ public class ParsedAttestationRecordTest {
     assertThat(actual.teeEnforced().attestationIdBrand())
         .isEqualTo(expected.teeEnforced().attestationIdBrand());
     assertThat(actual.attestedKey()).isEqualTo(expected.attestedKey());
+  }
+
+  private static PublicKey generatePublicKey() throws NoSuchAlgorithmException {
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+    generator.initialize(256);
+    return generator.generateKeyPair().getPublic();
+  }
+
+  private static ASN1Sequence validRecordSequence() throws NoSuchAlgorithmException {
+    return ParsedAttestationRecord.builder()
+        .setAttestationVersion(3)
+        .setAttestationSecurityLevel(SecurityLevel.STRONG_BOX)
+        .setKeymasterVersion(4)
+        .setKeymasterSecurityLevel(SecurityLevel.STRONG_BOX)
+        .setAttestationChallenge(ByteString.copyFromUtf8("challenge"))
+        .setUniqueId(ByteString.EMPTY)
+        .setSoftwareEnforced(AuthorizationList.builder().build())
+        .setTeeEnforced(AuthorizationList.builder().build())
+        .setAttestedKey(generatePublicKey())
+        .build()
+        .toAsn1Sequence();
+  }
+
+  @Test
+  public void createAttestationRecord_truncatedSequence_throws() throws Exception {
+    PublicKey attestedKey = generatePublicKey();
+    ASN1Encodable[] fields = validRecordSequence().toArray();
+    ASN1Sequence truncated = new DERSequence(Arrays.copyOf(fields, fields.length - 1));
+
+    assertThrows(
+        IllegalArgumentException.class, () -> ParsedAttestationRecord.create(truncated, attestedKey));
+  }
+
+  @Test
+  public void createAttestationRecord_wrongFieldType_throws() throws Exception {
+    PublicKey attestedKey = generatePublicKey();
+
+    ASN1Encodable[] fields = validRecordSequence().toArray();
+    fields[0] = new DEROctetString(new byte[] {3});
+    ASN1Sequence badVersion = new DERSequence(fields);
+    assertThrows(
+        IllegalArgumentException.class, () -> ParsedAttestationRecord.create(badVersion, attestedKey));
+
+    fields = validRecordSequence().toArray();
+    fields[4] = new ASN1Integer(1);
+    ASN1Sequence badChallenge = new DERSequence(fields);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.create(badChallenge, attestedKey));
+
+    fields = validRecordSequence().toArray();
+    fields[6] = new DEROctetString(new byte[0]);
+    ASN1Sequence badSwEnforced = new DERSequence(fields);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.create(badSwEnforced, attestedKey));
+
+    fields = validRecordSequence().toArray();
+    fields[7] = new ASN1Integer(1);
+    ASN1Sequence badTeeEnforced = new DERSequence(fields);
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.create(badTeeEnforced, attestedKey));
+  }
+
+  @Test
+  public void createAttestationRecord_invalidVersion_throws() throws Exception {
+    PublicKey attestedKey = generatePublicKey();
+    ASN1Encodable[] fields = validRecordSequence().toArray();
+    fields[0] = new ASN1Integer(0);
+    ASN1Sequence invalidVersion = new DERSequence(fields);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.create(invalidVersion, attestedKey));
+  }
+
+  @Test
+  public void createAttestationRecord_invalidSecurityLevel_throws() throws Exception {
+    PublicKey attestedKey = generatePublicKey();
+    ASN1Encodable[] fields = validRecordSequence().toArray();
+    fields[1] = new ASN1Enumerated(42);
+    ASN1Sequence invalidSecurityLevel = new DERSequence(fields);
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.create(invalidSecurityLevel, attestedKey));
+  }
+
+  @Test
+  public void extractAttestationSequence_truncatedDer_throws() {
+    // Octet string declaring 16 content bytes but providing only 1.
+    byte[] truncated = new byte[] {0x04, 0x10, 0x30};
+
+    assertThrows(
+        IOException.class, () -> ParsedAttestationRecord.extractAttestationSequence(truncated));
+  }
+
+  @Test
+  public void extractAttestationSequence_notAnOctetString_throws() throws Exception {
+    byte[] sequenceOnly = new DERSequence().getEncoded();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.extractAttestationSequence(sequenceOnly));
+  }
+
+  @Test
+  public void extractAttestationSequence_innerObjectNotASequence_throws() throws Exception {
+    byte[] octetStringWrappingInteger =
+        new DEROctetString(new ASN1Integer(1).getEncoded()).getEncoded();
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.extractAttestationSequence(octetStringWrappingInteger));
+  }
+
+  @Test
+  public void extractAttestationSequence_emptyInput_throws() {
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.extractAttestationSequence(new byte[0]));
   }
 }

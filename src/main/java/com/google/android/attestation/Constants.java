@@ -36,6 +36,7 @@ public class Constants {
           + "ixPvZtXQpUpuL12ab+9EaDK8Z4RHJYYfCT3Q5vNAXaiWQ+8PTWm2QgBR/bkwSWc+"
           + "NpUFgNPN9PvQi8WEg5UmAGMCAwEAAQ==";
   public static final String KEY_DESCRIPTION_OID = "1.3.6.1.4.1.11129.2.1.17";
+  static final int KEY_DESCRIPTION_SIZE = 8;
   static final int ATTESTATION_VERSION_INDEX = 0;
   static final int ATTESTATION_SECURITY_LEVEL_INDEX = 1;
   static final int KEYMASTER_VERSION_INDEX = 2;

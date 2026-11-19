@@ -58,7 +58,6 @@ import static com.google.android.attestation.Constants.KM_TAG_VENDOR_PATCH_LEVEL
 import static com.google.android.attestation.Constants.UINT32_MAX;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
-import static java.util.Arrays.stream;
 
 import com.google.auto.value.AutoValue;
 import com.google.common.annotations.VisibleForTesting;
@@ -71,6 +70,7 @@ import com.google.errorprone.annotations.CanIgnoreReturnValue;
 import com.google.errorprone.annotations.Immutable;
 import com.google.protobuf.ByteString;
 import java.time.Duration;
+import java.time.DateTimeException;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.YearMonth;
@@ -87,7 +87,6 @@ import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Object;
 import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.ASN1Sequence;
-import org.bouncycastle.asn1.ASN1Set;
 import org.bouncycastle.asn1.ASN1TaggedObject;
 import org.bouncycastle.asn1.ASN1Util;
 import org.bouncycastle.asn1.DERNull;
@@ -588,25 +587,25 @@ public abstract class AuthorizationList {
     Builder builder = AuthorizationList.builder();
     ParsedAuthorizationMap parsedAuthorizationMap = new ParsedAuthorizationMap(authorizationList);
     parsedAuthorizationMap.findIntegerSetAuthorizationListEntry(KM_TAG_PURPOSE).stream()
-        .map(ASN1_TO_OPERATION_PURPOSE::get)
+        .map(value -> asn1ToEnum(ASN1_TO_OPERATION_PURPOSE, value, "operation purpose"))
         .forEach(builder::addPurpose);
     parsedAuthorizationMap
         .findOptionalIntegerAuthorizationListEntry(KM_TAG_ALGORITHM)
-        .map(ASN1_TO_ALGORITHM::get)
+        .map(value -> asn1ToEnum(ASN1_TO_ALGORITHM, value, "algorithm"))
         .ifPresent(builder::setAlgorithm);
 
     parsedAuthorizationMap
         .findOptionalIntegerAuthorizationListEntry(KM_TAG_KEY_SIZE)
         .ifPresent(builder::setKeySize);
     parsedAuthorizationMap.findIntegerSetAuthorizationListEntry(KM_TAG_DIGEST).stream()
-        .map(ASN1_TO_DIGEST_MODE::get)
+        .map(value -> asn1ToEnum(ASN1_TO_DIGEST_MODE, value, "digest mode"))
         .forEach(builder::addDigest);
     parsedAuthorizationMap.findIntegerSetAuthorizationListEntry(KM_TAG_PADDING).stream()
-        .map(ASN1_TO_PADDING_MODE::get)
+        .map(value -> asn1ToEnum(ASN1_TO_PADDING_MODE, value, "padding mode"))
         .forEach(builder::addPadding);
     parsedAuthorizationMap
         .findOptionalIntegerAuthorizationListEntry(KM_TAG_EC_CURVE)
-        .map(ASN1_TO_EC_CURVE::get)
+        .map(value -> asn1ToEnum(ASN1_TO_EC_CURVE, value, "EC curve"))
         .ifPresent(builder::setEcCurve);
     parsedAuthorizationMap
         .findOptionalLongAuthorizationListEntry(KM_TAG_RSA_PUBLIC_EXPONENT)
@@ -647,11 +646,11 @@ public abstract class AuthorizationList {
         .ifPresent(builder::setCreationDateTime);
     parsedAuthorizationMap
         .findOptionalIntegerAuthorizationListEntry(KM_TAG_ORIGIN)
-        .map(ASN1_TO_KEY_ORIGIN::get)
+        .map(value -> asn1ToEnum(ASN1_TO_KEY_ORIGIN, value, "key origin"))
         .ifPresent(builder::setOrigin);
     parsedAuthorizationMap
         .findAuthorizationListEntry(KM_TAG_ROOT_OF_TRUST)
-        .map(ASN1Sequence.class::cast)
+        .map(ASN1Parsing::getSequenceFromAsn1)
         .map(rootOfTrust -> RootOfTrust.createRootOfTrust(rootOfTrust, attestationVersion))
         .ifPresent(builder::setRootOfTrust);
     parsedAuthorizationMap
@@ -664,7 +663,7 @@ public abstract class AuthorizationList {
         .ifPresent(builder::setOsPatchLevel);
     parsedAuthorizationMap
         .findAuthorizationListEntry(KM_TAG_ATTESTATION_APPLICATION_ID)
-        .map(ASN1OctetString.class::cast)
+        .map(ASN1Parsing::getOctetStringFromAsn1)
         .map(ASN1OctetString::getOctets)
         .map(AttestationApplicationId::createAttestationApplicationId)
         .ifPresent(builder::setAttestationApplicationId);
@@ -722,7 +721,19 @@ public abstract class AuthorizationList {
         value.length() == 8 && !value.substring(6, 8).equals("00")
             ? Integer.parseInt(value.substring(6, 8))
             : 1;
-    return LocalDate.of(year, month, day);
+    try {
+      return LocalDate.of(year, month, day);
+    } catch (DateTimeException e) {
+      throw new IllegalArgumentException("Invalid date value: " + value, e);
+    }
+  }
+
+  private static <T> T asn1ToEnum(ImmutableMap<Integer, T> map, int value, String description) {
+    T result = map.get(value);
+    if (result == null) {
+      throw new IllegalArgumentException("Unknown " + description + " value: " + value);
+    }
+    return result;
   }
 
   private static YearMonth toYearMonth(String value) {
@@ -942,13 +953,21 @@ public abstract class AuthorizationList {
     private final ImmutableList<Integer> unorderedTags;
 
     private ParsedAuthorizationMap(ASN1Encodable[] authorizationList) {
-      this.authorizationMap =
-          stream(authorizationList)
-              .map(ASN1TaggedObject::getInstance)
-              .collect(
-                  ImmutableListMultimap.toImmutableListMultimap(
-                      ASN1TaggedObject::getTagNo,
-                      obj -> ASN1Util.getExplicitContextBaseObject(obj, obj.getTagNo())));
+      ImmutableListMultimap.Builder<Integer, ASN1Object> authorizationMapBuilder =
+          ImmutableListMultimap.builder();
+      for (ASN1Encodable entry : authorizationList) {
+        ASN1TaggedObject taggedEntry = ASN1Parsing.getTaggedObjectFromAsn1(entry);
+        if (!taggedEntry.isExplicit()) {
+          throw new IllegalArgumentException(
+              "Explicitly tagged authorization list entry expected; found implicit tag "
+                  + taggedEntry.getTagNo()
+                  + " instead.");
+        }
+        authorizationMapBuilder.put(
+            taggedEntry.getTagNo(),
+            ASN1Util.getExplicitContextBaseObject(taggedEntry, taggedEntry.getTagNo()));
+      }
+      this.authorizationMap = authorizationMapBuilder.build();
 
       ImmutableList.Builder<Integer> unorderedTags = ImmutableList.builder();
       int previousTag = 0;
@@ -972,21 +991,19 @@ public abstract class AuthorizationList {
       } else if (entries.size() == 1) {
         return Optional.of(entries.get(0));
       } else {
-        throw new IllegalStateException(
+        throw new IllegalArgumentException(
             String.format("Multiple authorization list entries for tag %d", tag));
       }
     }
 
     private Optional<Integer> findOptionalIntegerAuthorizationListEntry(int tag) {
-      return findAuthorizationListEntry(tag)
-          .map(ASN1Integer.class::cast)
-          .map(ASN1Parsing::getIntegerFromAsn1);
+      return findAuthorizationListEntry(tag).map(ASN1Parsing::getIntegerFromAsn1);
     }
 
     private ImmutableSet<Integer> findIntegerSetAuthorizationListEntry(int tag) {
       // if there are duplicate ASN1Set(s) for given tag, merge them into one set
       return authorizationMap.get(tag).stream()
-          .map(ASN1Set.class::cast)
+          .map(ASN1Parsing::getSetFromAsn1)
           .flatMap(Streams::stream)
           .map(ASN1Parsing::getIntegerFromAsn1)
           .collect(toImmutableSet());
@@ -998,9 +1015,7 @@ public abstract class AuthorizationList {
     }
 
     private Optional<Long> findOptionalLongAuthorizationListEntry(int tag) {
-      return findAuthorizationListEntry(tag)
-          .map(ASN1Integer.class::cast)
-          .map(value -> value.getValue().longValue());
+      return findAuthorizationListEntry(tag).map(ASN1Parsing::getLongFromAsn1);
     }
 
     private boolean findBooleanAuthorizationListEntry(int tag) {
@@ -1009,7 +1024,7 @@ public abstract class AuthorizationList {
 
     private Optional<ByteString> findOptionalByteArrayAuthorizationListEntry(int tag) {
       return findAuthorizationListEntry(tag)
-          .map(ASN1OctetString.class::cast)
+          .map(ASN1Parsing::getOctetStringFromAsn1)
           .map(ASN1OctetString::getOctets)
           .map(ByteString::copyFrom);
     }

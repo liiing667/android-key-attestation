@@ -93,21 +93,27 @@ public abstract class AttestationApplicationId {
     AttestationApplicationId.Builder builder = AttestationApplicationId.builder();
     ASN1Sequence attestationApplicationIdSequence =
         ASN1Sequence.getInstance(attestationApplicationId);
+    if (attestationApplicationIdSequence.size() < 2) {
+      throw new IllegalArgumentException(
+          "Attestation application ID must contain at least 2 fields; found "
+              + attestationApplicationIdSequence.size()
+              + " instead.");
+    }
     ASN1Set attestationPackageInfos =
-        (ASN1Set)
+        ASN1Parsing.getSetFromAsn1(
             attestationApplicationIdSequence.getObjectAt(
-                ATTESTATION_APPLICATION_ID_PACKAGE_INFOS_INDEX);
+                ATTESTATION_APPLICATION_ID_PACKAGE_INFOS_INDEX));
     stream(attestationPackageInfos.iterator())
-        .map(ASN1Sequence.class::cast)
+        .map(ASN1Parsing::getSequenceFromAsn1)
         .map(AttestationPackageInfo::create)
         .forEach(builder::addPackageInfo);
 
     ASN1Set digests =
-        (ASN1Set)
+        ASN1Parsing.getSetFromAsn1(
             attestationApplicationIdSequence.getObjectAt(
-                ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX);
+                ATTESTATION_APPLICATION_ID_SIGNATURE_DIGESTS_INDEX));
     stream(digests.iterator())
-        .map(ASN1OctetString.class::cast)
+        .map(ASN1Parsing::getOctetStringFromAsn1)
         .map(ASN1OctetString::getOctets)
         .map(ByteString::copyFrom)
         .forEach(builder::addSignatureDigest);
@@ -158,16 +164,21 @@ public abstract class AttestationApplicationId {
     }
 
     private static AttestationPackageInfo create(ASN1Sequence packageInfo) {
+      if (packageInfo.size() < 2) {
+        throw new IllegalArgumentException(
+            "Attestation package info must contain at least 2 fields; found "
+                + packageInfo.size()
+                + " instead.");
+      }
       String packageName =
           new String(
-              ((ASN1OctetString)
+              ASN1Parsing.getOctetStringFromAsn1(
                       packageInfo.getObjectAt(ATTESTATION_PACKAGE_INFO_PACKAGE_NAME_INDEX))
                   .getOctets(),
               UTF_8);
       long version =
-          ((ASN1Integer) packageInfo.getObjectAt(ATTESTATION_PACKAGE_INFO_VERSION_INDEX))
-              .getValue()
-              .longValue();
+          ASN1Parsing.getLongFromAsn1(
+              packageInfo.getObjectAt(ATTESTATION_PACKAGE_INFO_VERSION_INDEX));
       return AttestationPackageInfo.builder()
           .setPackageName(packageName)
           .setVersion(version)

@@ -32,7 +32,6 @@ import java.util.Optional;
 import org.bouncycastle.asn1.ASN1Boolean;
 import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.ASN1Enumerated;
-import org.bouncycastle.asn1.ASN1OctetString;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.DEROctetString;
 import org.bouncycastle.asn1.DERSequence;
@@ -84,9 +83,22 @@ public abstract class RootOfTrust {
   }
 
   static RootOfTrust createRootOfTrust(ASN1Sequence rootOfTrust, int attestationVersion) {
+    int requiredFields =
+        attestationVersion >= 3
+            ? ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX + 1
+            : ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX + 1;
+    if (rootOfTrust.size() < requiredFields) {
+      throw new IllegalArgumentException(
+          "Root of trust must contain at least "
+              + requiredFields
+              + " fields; found "
+              + rootOfTrust.size()
+              + " instead.");
+    }
     Builder builder = RootOfTrust.builder();
     builder.setVerifiedBootKey(
-        ASN1OctetString.getInstance(rootOfTrust.getObjectAt(ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX))
+        ASN1Parsing.getOctetStringFromAsn1(
+                rootOfTrust.getObjectAt(ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX))
             .getOctets());
     builder.setDeviceLocked(
         ASN1Parsing.getBooleanFromAsn1(rootOfTrust.getObjectAt(ROOT_OF_TRUST_DEVICE_LOCKED_INDEX)));
@@ -96,7 +108,7 @@ public abstract class RootOfTrust {
                 rootOfTrust.getObjectAt(ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX))));
     if (attestationVersion >= 3) {
       builder.setVerifiedBootHash(
-          ASN1OctetString.getInstance(
+          ASN1Parsing.getOctetStringFromAsn1(
                   rootOfTrust.getObjectAt(ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX))
               .getOctets());
     }
