@@ -50,6 +50,9 @@ import org.bouncycastle.asn1.DERSequence;
 @Immutable
 public abstract class ParsedAttestationRecord {
 
+  // The KeyDescription schema defines exactly this many elements, in a fixed order.
+  private static final int KEY_DESCRIPTION_ELEMENT_COUNT = TEE_ENFORCED_INDEX + 1;
+
   public abstract int attestationVersion();
 
   public abstract SecurityLevel attestationSecurityLevel();
@@ -136,6 +139,14 @@ public abstract class ParsedAttestationRecord {
   }
 
   public static ParsedAttestationRecord create(ASN1Sequence extensionData, PublicKey attestedKey) {
+    // Fail closed on records with missing or unexpected elements: silently ignoring trailing
+    // elements could change the security judgement made from the parsed record.
+    if (extensionData.size() != KEY_DESCRIPTION_ELEMENT_COUNT) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Invalid attestation record: expected %d elements, found %d.",
+              KEY_DESCRIPTION_ELEMENT_COUNT, extensionData.size()));
+    }
     Builder builder = builder();
     int attestationVersion =
         ASN1Parsing.getIntegerFromAsn1(extensionData.getObjectAt(ATTESTATION_VERSION_INDEX));

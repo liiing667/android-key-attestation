@@ -70,6 +70,14 @@ public class RootOfTrustTest {
   }
 
   @Test
+  public void testCreateRootOfTrustWithUnexpectedElementCountThrows() throws IOException {
+    // ROOT_OF_TRUST contains four elements, which is only valid for attestation version >= 3.
+    ASN1Sequence rootOfTrustSequence = getRootOfTrustSequence(ROOT_OF_TRUST);
+    assertThrows(
+        IllegalArgumentException.class, () -> RootOfTrust.createRootOfTrust(rootOfTrustSequence, 2));
+  }
+
+  @Test
   public void testBuildRootOfTrust() throws IOException {
     RootOfTrust rootOfTrust = RootOfTrust.builder()
         .setVerifiedBootKey(EXPECTED_VERIFIED_BOOT_KEY)

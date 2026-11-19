@@ -28,6 +28,7 @@ import static com.google.android.attestation.AuthorizationList.UserAuthType.USER
 import static com.google.android.attestation.AuthorizationList.userAuthTypeToEnum;
 import static com.google.android.attestation.Constants.UINT32_MAX;
 import static com.google.common.truth.Truth.assertThat;
+import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.fail;
 
 import com.google.android.attestation.AuthorizationList.Algorithm;
@@ -47,8 +48,10 @@ import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import org.bouncycastle.asn1.ASN1Encodable;
+import org.bouncycastle.asn1.ASN1Integer;
 import org.bouncycastle.asn1.ASN1Sequence;
 import org.bouncycastle.asn1.ASN1TaggedObject;
+import org.bouncycastle.asn1.DERTaggedObject;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -264,11 +267,81 @@ public class AuthorizationListTest {
   }
 
   @Test
-  public void testRepatedAuthorizationTags() throws Exception {
-    AuthorizationList authorizationList =
-        AuthorizationList.createAuthorizationList(
-            getEncodableAuthorizationList(EXTENSION_DATA_WITH_REPATED_TAGS), ATTESTATION_VERSION);
+  public void testConflictingRepeatedAuthorizationTagsThrow() throws Exception {
+    // EXTENSION_DATA_WITH_REPATED_TAGS carries two DIGEST (tag 5) sets with conflicting
+    // contents ({MD5} and {SHA_2_256}); the parser must fail closed instead of merging them.
+    IllegalArgumentException expected =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    getEncodableAuthorizationList(EXTENSION_DATA_WITH_REPATED_TAGS),
+                    ATTESTATION_VERSION));
+    assertThat(expected).hasMessageThat().contains("Conflicting duplicate");
+  }
 
-    assertThat(authorizationList.digest()).containsExactly(DigestMode.SHA_2_256, DigestMode.MD5);
+  @Test
+  public void testIdenticalRepeatedAuthorizationTagsAreDeduplicated() throws Exception {
+    ASN1Encodable[] baseList =
+        getEncodableAuthorizationList(EXTENTION_DATA_WITH_INDIVIDUAL_ATTESTATION);
+    // Duplicate the first entry (same tag, same value) right after itself.
+    ASN1Encodable[] listWithDuplicate = new ASN1Encodable[baseList.length + 1];
+    listWithDuplicate[0] = baseList[0];
+    listWithDuplicate[1] = baseList[0];
+    System.arraycopy(baseList, 1, listWithDuplicate, 2, baseList.length - 1);
+
+    AuthorizationList authorizationList =
+        AuthorizationList.createAuthorizationList(listWithDuplicate, ATTESTATION_VERSION);
+
+    assertThat(authorizationList)
+        .isEqualTo(AuthorizationList.createAuthorizationList(baseList, ATTESTATION_VERSION));
+  }
+
+  @Test
+  public void testConflictingRepeatedScalarAuthorizationTagsThrow() throws Exception {
+    ASN1Encodable[] baseList =
+        getEncodableAuthorizationList(EXTENTION_DATA_WITH_INDIVIDUAL_ATTESTATION);
+    // Append a second KEY_SIZE (tag 3) entry carrying a different value.
+    ASN1Encodable[] listWithConflict = Arrays.copyOf(baseList, baseList.length + 1);
+    listWithConflict[baseList.length] =
+        new DERTaggedObject(Constants.KM_TAG_KEY_SIZE, new ASN1Integer(4096));
+
+    IllegalArgumentException expected =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    listWithConflict, ATTESTATION_VERSION));
+    assertThat(expected).hasMessageThat().contains("Conflicting duplicate");
+  }
+
+  @Test
+  public void testUnknownAuthorizationTagThrows() throws Exception {
+    ASN1Encodable[] baseList =
+        getEncodableAuthorizationList(EXTENTION_DATA_WITH_INDIVIDUAL_ATTESTATION);
+    ASN1Encodable[] listWithUnknownTag = Arrays.copyOf(baseList, baseList.length + 1);
+    listWithUnknownTag[baseList.length] = new DERTaggedObject(600, new ASN1Integer(1));
+
+    IllegalArgumentException expected =
+        assertThrows(
+            IllegalArgumentException.class,
+            () ->
+                AuthorizationList.createAuthorizationList(
+                    listWithUnknownTag, ATTESTATION_VERSION));
+    assertThat(expected).hasMessageThat().contains("Unknown authorization list tag");
+  }
+
+  @Test
+  public void testUnknownAlgorithmValueThrows() throws Exception {
+    ASN1Encodable[] baseList =
+        getEncodableAuthorizationList(EXTENTION_DATA_WITH_INDIVIDUAL_ATTESTATION);
+    // Replace the ALGORITHM (tag 2) entry with a value this library does not know.
+    baseList[1] = new DERTaggedObject(Constants.KM_TAG_ALGORITHM, new ASN1Integer(42));
+
+    IllegalArgumentException expected =
+        assertThrows(
+            IllegalArgumentException.class,
+            () -> AuthorizationList.createAuthorizationList(baseList, ATTESTATION_VERSION));
+    assertThat(expected).hasMessageThat().contains("Invalid algorithm value");
   }
 }

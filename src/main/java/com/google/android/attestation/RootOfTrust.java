@@ -84,6 +84,18 @@ public abstract class RootOfTrust {
   }
 
   static RootOfTrust createRootOfTrust(ASN1Sequence rootOfTrust, int attestationVersion) {
+    // The verified boot hash was added in attestation version 3; the schema defines no other
+    // elements, so fail closed on any missing or unexpected elements.
+    int expectedElementCount =
+        attestationVersion >= 3
+            ? ROOT_OF_TRUST_VERIFIED_BOOT_HASH_INDEX + 1
+            : ROOT_OF_TRUST_VERIFIED_BOOT_STATE_INDEX + 1;
+    if (rootOfTrust.size() != expectedElementCount) {
+      throw new IllegalArgumentException(
+          String.format(
+              "Invalid root of trust: expected %d elements, found %d.",
+              expectedElementCount, rootOfTrust.size()));
+    }
     Builder builder = RootOfTrust.builder();
     builder.setVerifiedBootKey(
         ASN1OctetString.getInstance(rootOfTrust.getObjectAt(ROOT_OF_TRUST_VERIFIED_BOOT_KEY_INDEX))

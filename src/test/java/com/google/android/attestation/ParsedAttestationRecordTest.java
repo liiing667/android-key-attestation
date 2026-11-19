@@ -17,6 +17,7 @@ package com.google.android.attestation;
 
 import static com.google.common.truth.Truth.assertThat;
 import static java.nio.charset.StandardCharsets.UTF_8;
+import static org.junit.Assert.assertThrows;
 
 import com.google.android.attestation.AuthorizationList.UserAuthType;
 import com.google.android.attestation.ParsedAttestationRecord.SecurityLevel;
@@ -31,7 +32,10 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Arrays;
+import org.bouncycastle.asn1.ASN1Encodable;
 import org.bouncycastle.asn1.ASN1Sequence;
+import org.bouncycastle.asn1.DERNull;
+import org.bouncycastle.asn1.DERSequence;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
@@ -167,5 +171,28 @@ public class ParsedAttestationRecordTest {
     assertThat(actual.teeEnforced().attestationIdBrand())
         .isEqualTo(expected.teeEnforced().attestationIdBrand());
     assertThat(actual.attestedKey()).isEqualTo(expected.attestedKey());
+  }
+
+  @Test
+  public void testCreateWithUnexpectedElementThrows() throws NoSuchAlgorithmException {
+    KeyPairGenerator generator = KeyPairGenerator.getInstance("EC");
+    generator.initialize(256);
+    PublicKey attestedKey = generator.generateKeyPair().getPublic();
+    ParsedAttestationRecord record =
+        ParsedAttestationRecord.builder()
+            .setAttestationVersion(3)
+            .setAttestationSecurityLevel(
+                ParsedAttestationRecord.SecurityLevel.TRUSTED_ENVIRONMENT)
+            .setKeymasterVersion(4)
+            .setKeymasterSecurityLevel(ParsedAttestationRecord.SecurityLevel.TRUSTED_ENVIRONMENT)
+            .setAttestedKey(attestedKey)
+            .build();
+    ASN1Encodable[] elements = record.toAsn1Sequence().toArray();
+    ASN1Encodable[] elementsWithExtra = Arrays.copyOf(elements, elements.length + 1);
+    elementsWithExtra[elements.length] = DERNull.INSTANCE;
+
+    assertThrows(
+        IllegalArgumentException.class,
+        () -> ParsedAttestationRecord.create(new DERSequence(elementsWithExtra), attestedKey));
   }
 }
